@@ -17,16 +17,16 @@ Initially, many libraries were used however they quickly became obsolete in the 
 ###Requirements:
 Wire.h
 
-## Update:
-Version 2 is being worked on with better hardware and coding updates to follow.
-
 ## More Details:
 A video of the first version can be seen here:
+
 [![FlopBot V1](https://img.youtube.com/vi/3Z_lyWx3Hao/0.jpg)](https://www.youtube.com/watch?v=3Z_lyWx3Hao)
+
 A detailed breakdown of the first version:
+
 [FlopBot Version 1 PDF Breakdown](Flopbot_V01_-_Report.pdf)
 
-## Wiring:
+### Wiring:
 Pin | Usage | Purpose
 ------------ | ------------- | -------------
 0 | (RX) | CPPM
@@ -37,7 +37,7 @@ Pin | Usage | Purpose
 10 | (PWM) | Motor
 13 | (BIN) | LED
 
-## Internal Timers:
+### Internal Timers:
 Timer | bits | Prescaling | Type | TOP | Frequency | Usage
 ------------ | ------------- | ------------- | ------------- | ------------- | ------------- | -------------
 0 | 8 | 64 | CTC | 77 | 3205 | LSM6 && ADXL
@@ -50,3 +50,6 @@ Timer | bits | Prescaling | Type | TOP | Frequency | Usage
 * The RX pin (0) is used as an interrupt pin and therefore, the board needs to be reprogrammed with an external programmer (ISP).
 * Helicopter tail servos generally support high frequencies, have low latencies, small amounts of slop and are very quick.
 * If you have any questions regarding building your own monocopter, drop me a DM on [Twitter](https://twitter.com/CarlBeek)
+
+## Update:
+Version 2 is being worked on with better hardware and coding updates to follow.
