@@ -42,9 +42,9 @@ Timer 		bits 		Prescaling	Type		TOP		 	Frequency	Useage
 #define HMC_ADDRESS						(0x1E)
 
 //Servo definitions
-#define servo_centre 					(1540)
-#define servo_max_lift					(1210)
-#define servo_min_lift					(1870)
+#define servo_centre 					(1500)
+#define servo_max_lift					(1000)
+#define servo_min_lift					(2000)
 #define motor_min						(1000)
 
 //Definitions for HMC5883L
@@ -58,15 +58,13 @@ Timer 		bits 		Prescaling	Type		TOP		 	Frequency	Useage
 
 //sundry definitions
 #define float_max 						(3.4028235E+38)
+#define SUM_min							(243)
 
 const float two_pi = 6.2831853;
 
 
-volatile unsigned int cppm_channels[9];
+volatile unsigned int cppm_channels[9] = {2000, 2000, 2000, 1000, 1000, 2000, 1000, 1000, 1000};
 volatile boolean hmc_data_ready = 0;
-byte cppm_channel = 0;
-unsigned long cppm_channel_start = 0;
-unsigned long cppm_channel_end = 1;
 unsigned int pwm_out[2];
 //HMC Variables:
 uint8_t hmc_buffer[6];
@@ -76,14 +74,13 @@ float heading_target = 0.0;
 float heading_target_previous = 0.0;
 
 void setup(){
-	attachInterrupt(digitalPinToInterrupt(0), cppm_interrupt, RISING);
 	attachInterrupt(digitalPinToInterrupt(7), hmc_interrupt, FALLING);
 	timer_interrupt_setup();
 	hmc_setup();
 	pinMode(9, OUTPUT);
 	pinMode(10, OUTPUT);
-	pinMode(13, OUTPUT);
-
+	pinMode(12, OUTPUT);
+	Serial.begin(9600);
 	/*
 	hmc_read();
 	heading_target_previous = atan2(hmc_raw[2], hmc_raw[0]);
@@ -100,19 +97,26 @@ void loop(){
 	//Asimuth approximation:
 	float mag_heading_current = atan2(hmc_raw[2], hmc_raw[0]);
 	//Asuming 1000us looptime, this should result in 100dps max yaw
-	heading_target = heading_target_previous + fap(0,1000,2000,-0.6283185,0.6283185);
+	heading_target = heading_target_previous + fap(1500,1000,2000,-0.6283185,0.6283185);
 	heading_target_previous = heading_target;
 	float heading_relative = relative_heading_calc(mag_heading_current, heading_target);
 
+	// Serial.println(heading_relative);
+
+	int component_pitch = sin(heading_relative)*(cppm_channels[1] - 1500);
+	int component_roll = cos(heading_relative)*(1500 - cppm_channels[0]);
+	int component_collective = 1500 + 0.5*(cppm_channels[2] - 1500);
 	//Checks if system is armed with cppm_channel[5]
 	if (cppm_channels[5]>1500){
 		//turn on LED for rear 60 degrees
-	digitalWrite(13, ((heading_relative>2.62) && (heading_relative<3.67)));
+		digitalWrite(12, ((heading_relative>2.62) && (heading_relative<3.67)));
+		pwm_out[0] = (((component_collective + component_roll + component_pitch) - SUM_min) / 2.9) + servo_max_lift;
+		pwm_out[1] = 1000;
 		
 	}else{
 		pwm_out[0] = 1500;
 		pwm_out[1] = 1000;
-		digitalWrite(13, LOW);
+		digitalWrite(12, LOW);
 	}
 	update_outputs();
 }
@@ -181,19 +185,7 @@ void hmc_setup(){
 	Wire.endTransmission();
 }
 
-void cppm_interrupt(){
-	//Initialise timing for next channel
-	cppm_channel_end = micros();
-	int cppm_channel_duration = (int)(cppm_channel_end - cppm_channel_start);
-	cppm_channel_start = cppm_channel_end;
-	cppm_channels[cppm_channel] = cppm_channel_duration;
-	//Increase or overflow from 9'th channel (frame buffer) to 0;
-	if (cppm_channel_duration>2500){
-		cppm_channel = 0;
-	}else{
-		cppm_channel ++;
-	}
-}
+
 
 void hmc_interrupt(){
 	hmc_data_ready = true;
