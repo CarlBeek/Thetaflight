@@ -3,6 +3,10 @@ Thetaflight for FlopBot
 By Carl Beekhuizen
 
 
+Version 1.01
+-Flopbot v2
+-Translational adaptation of working V0.03
+
 Wiring:
 Assuming an Arduino Micro:
 
@@ -12,7 +16,7 @@ Assuming an Arduino Micro:
 7			(DRDY)		HMC DRDY Interrupt
 9			(PWM)		Servo
 10			(PWM)		Motor
-13			(BIN)		LED
+12			(BIN)		LED
 
 Channels:
 RX 			Arduino		Name
@@ -34,7 +38,6 @@ Timer 		bits 		Prescaling	Type		TOP		 	Frequency	Useage
 */
 
 
-
 //Inclusion of libraries
 #include <Wire.h>
 
@@ -43,8 +46,8 @@ Timer 		bits 		Prescaling	Type		TOP		 	Frequency	Useage
 
 //Servo definitions
 #define servo_centre 					(1500)
-#define servo_max_lift					(1000)
-#define servo_min_lift					(2000)
+#define servo_max_lift					(2000)
+#define servo_min_lift					(1000)
 #define motor_min						(1000)
 
 //Definitions for HMC5883L
@@ -58,36 +61,55 @@ Timer 		bits 		Prescaling	Type		TOP		 	Frequency	Useage
 
 //sundry definitions
 #define float_max 						(3.4028235E+38)
-#define SUM_min							(243)
 
-const float two_pi = 6.2831853;
+//Arduino pin definitions
+#define servo_pin 9
+#define motor_pin 10
+#define heading_led_pin 12
 
+//const float two_pi = 6.2831853;
 
-volatile unsigned int cppm_channels[9] = {2000, 2000, 2000, 1000, 1000, 2000, 1000, 1000, 1000};
-volatile boolean hmc_data_ready = 0;
+//Servo details (us)
+#define servo_centre 		1500
+#define servo_max_lift		1000
+#define servo_min_lift		2000
+#define motor_min			1000
+#define arm_point 1500
+
+// Placeholder varaibles for CPPM and PWM signals
+volatile int cppm_channels[9];
+byte cppm_channel = 0;
+unsigned long cppm_channel_start = 0;
+unsigned long cppm_channel_end = 1;
 unsigned int pwm_out[2];
-//HMC Variables:
+
+// HMC placeholders:
+volatile boolean hmc_data_ready = false;
 uint8_t hmc_buffer[6];
 int16_t hmc_raw[3];
 //Yaw and heading variables:
 float heading_target = 0.0;
 float heading_target_previous = 0.0;
 
+
 void setup(){
-	attachInterrupt(digitalPinToInterrupt(7), hmc_interrupt, FALLING);
+	//interupt setup
+	noInterrupts();
+	attachInterrupt(digitalPinToInterrupt(0), cppm_interrupt, RISING);
+	attachInterrupt(digitalPinToInterrupt(7), hmc_interrupt, RISING);
+	interrupts();
 	timer_interrupt_setup();
 	hmc_setup();
-	pinMode(9, OUTPUT);
-	pinMode(10, OUTPUT);
-	pinMode(12, OUTPUT);
-	Serial.begin(9600);
-	/*
-	hmc_read();
-	heading_target_previous = atan2(hmc_raw[2], hmc_raw[0]);
-	*/
+	
+
+	// Pinmode configs:
+	pinMode(servo_pin, OUTPUT);
+	pinMode(motor_pin, OUTPUT);
+	pinMode(heading_led_pin, OUTPUT);
 }
 
 void loop(){
+
 	//if there is new compass data
 	if(hmc_data_ready){
 		hmc_data_ready = false;
@@ -95,47 +117,79 @@ void loop(){
 	}
 
 	//Asimuth approximation:
-	float mag_heading_current = atan2(hmc_raw[2], hmc_raw[0]);
+	float mag_heading_current = atan2(hmc_raw[0], hmc_raw[2]);
 	//Asuming 1000us looptime, this should result in 100dps max yaw
-	heading_target = heading_target_previous + fap(1500,1000,2000,-0.6283185,0.6283185);
+	heading_target = heading_target_previous + fap(cppm_channels[3],1000,2000,-0.003141592654,0.003141592654);
 	heading_target_previous = heading_target;
 	float heading_relative = relative_heading_calc(mag_heading_current, heading_target);
 
-	// Serial.println(heading_relative);
+	//turn on heading LED for rear 60 degrees
+	digitalWrite(heading_led_pin, ((heading_relative>2.62) && (heading_relative<3.67)));
 
-	int component_pitch = sin(heading_relative)*(cppm_channels[1] - 1500);
-	int component_roll = cos(heading_relative)*(1500 - cppm_channels[0]);
-	int component_collective = 1500 + 0.5*(cppm_channels[2] - 1500);
+
+	//determine the components of roll pitch and yaw and their impacts on flight
+	float component_pitch = (sin(heading_relative)*(cppm_channels[1]-1500)*0.6);
+	float component_roll = (cos(heading_relative)*(cppm_channels[0]-1500)*0.6);
+	float component_collective = (0.4*cppm_channels[2] - 600);
+	int servo_out_temp = (int)max(1000,min(2000,((component_collective + component_roll + component_pitch) + servo_centre)));
+
 	//Checks if system is armed with cppm_channel[5]
-	if (cppm_channels[5]>1500){
-		//turn on LED for rear 60 degrees
-		digitalWrite(12, ((heading_relative>2.62) && (heading_relative<3.67)));
-		pwm_out[0] = (((component_collective + component_roll + component_pitch) - SUM_min) / 2.9) + servo_max_lift;
-		pwm_out[1] = 1000;
-		
+	if (cppm_channels[5]>arm_point){
+		//update motor and servo outputs
+		pwm_out[0] = servo_out_temp;
+		pwm_out[1] = cppm_channels[4];
 	}else{
-		pwm_out[0] = 1500;
-		pwm_out[1] = 1000;
-		digitalWrite(12, LOW);
+		pwm_out[0] = servo_centre;
+		pwm_out[1] = motor_min;
 	}
 	update_outputs();
 }
 
 
-float relative_heading_calc(float current, float target){
-	int x = (int)((current + target)/ two_pi);
-	float mod = ((current + target) - (x * two_pi));
-	if(mod<0){
-		return mod+two_pi;
-	}else{
-		return mod;
-	}
+//configure compass
+void hmc_setup(){
+	uint8_t mag_name;
+ 
+	// make sure that the device is connected
+	Wire.beginTransmission(HMC_ADDRESS);
+	Wire.write((byte) 0x0A); // Identification Register A
+	Wire.endTransmission();
+	 
+	Wire.beginTransmission(HMC_ADDRESS);
+	Wire.requestFrom(HMC_ADDRESS, 1);
+	mag_name = Wire.read();
+	Wire.endTransmission();
+
+
+	// Register 0x00: CONFIG_A
+	// normal measurement mode (0x00) and 75 Hz ODR (0x18)
+	Wire.beginTransmission(HMC_ADDRESS);
+	Wire.write((byte) HMC_REG_MAG_CRA_REG_M);
+	Wire.write((byte) 0x18);
+	Wire.endTransmission();
+	delayMicroseconds(5000);
+ 
+	// Register 0x01: CONFIG_B
+	// default range of +/- 130 uT (0x20)
+	Wire.beginTransmission(HMC_ADDRESS);
+	Wire.write((byte) HMC_REG_MAG_CRB_REG_M);
+	Wire.write((byte) 0x20);
+	Wire.endTransmission();
+	delayMicroseconds(5000);
+ 
+	// Register 0x02: MODE
+	// continuous measurement mode at configured ODR (0x00)
+	// possible to achieve 160 Hz by using single measurement mode (0x01) and DRDY
+	Wire.beginTransmission(HMC_ADDRESS);
+	Wire.write((byte) HMC_REG_MAG_MR_REG_M);
+	Wire.write(0x01);
+	Wire.endTransmission();
+	delayMicroseconds(5000);
 }
 
-//float Mapping function
-float fap(int x, int in_min, int in_max, float out_min, float out_max)
-{
-  return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
+
+void hmc_interrupt(){
+	hmc_data_ready = true;
 }
 
 
@@ -158,40 +212,39 @@ void timer_interrupt_setup(){
 	TCCR1B |= (1 << WGM13) | (1 << WGM12) | (1 << CS11) | (1 << CS10);
 }
 
-//configure compass
-void hmc_setup(){
-	// Register 0x00: CONFIG_A
-  	// normal measurement mode (0x00) and 75 Hz ODR (0x18)
-  	Wire.beginTransmission(HMC_ADDRESS);
-  	Wire.write(HMC_REG_MAG_CRA_REG_M);
-  	Wire.write((byte) 0x18);
-  	Wire.endTransmission();
-  	delayMicroseconds(5000);
- 
-	// Register 0x01: CONFIG_B
-	// default range of +/- 130 uT (0x20)
-  	Wire.beginTransmission(HMC_ADDRESS);
-  	Wire.write(HMC_REG_MAG_CRB_REG_M);
-  	Wire.write((byte) 0x20);
-  	Wire.endTransmission();
-  	delayMicroseconds(5000);
- 
- 	// Register 0x02: MODE
-	// continuous measurement mode at configured ODR (0x00)
-	// possible to achieve 160 Hz by using single measurement mode (0x01) and DRDY
-	Wire.beginTransmission(HMC_ADDRESS);
-	Wire.write(HMC_REG_MAG_MR_REG_M);
-	Wire.write(0x01);
-	Wire.endTransmission();
+
+void cppm_interrupt(){
+	//Initialise timing for next channel
+	cppm_channel_end = micros();
+	int cppm_channel_duration = (int)(cppm_channel_end - cppm_channel_start);
+	cppm_channel_start = cppm_channel_end;
+	cppm_channels[cppm_channel] = cppm_channel_duration;
+	//Increase or overflow from 9'th channel (frame buffer) to 0;
+	if (cppm_channel_duration>2500){
+		cppm_channel = 0;
+	}else{
+		cppm_channel ++;
+	}
+}
+
+float relative_heading_calc(float current, float target){
+	float temp = ((current + target)/ 6.2831853);
+	int x = (int)temp;
+	float mod = ((current + target) - (x * 6.2831853));
+	if(mod<0){
+		return (mod + 6.2831853);
+	}else{
+		return mod;
+	}
+}
+
+//float Mapping function
+float fap(int x, int in_min, int in_max, float out_min, float out_max)
+{
+  return (((x - in_min) * (out_max - out_min) / (in_max - in_min)) + out_min);
 }
 
 
-
-void hmc_interrupt(){
-	hmc_data_ready = true;
-}
-
-//writes the pwm signals to the motor and servo
 void update_outputs(){
 	int servo_out = map(pwm_out[0], 1000, 2000, 250, 500);
 	int motor_out = map(pwm_out[1], 1000, 2000, 250, 500);
@@ -203,6 +256,7 @@ void update_outputs(){
 	interrupts();
 }
 
+
 // read 6 bytes (x,y,z magnetic field measurements) from the magnetometer
 void hmc_read() {
 	// multibyte burst read of data registers (from 0x03 to 0x08)
@@ -213,17 +267,19 @@ void hmc_read() {
 	Wire.beginTransmission(HMC_ADDRESS);
 	Wire.requestFrom(HMC_ADDRESS, 6);  // Request 6 bytes
 
-	for(int i = 0; Wire.available() >0 && i < 6; i++){
+	int i = 0;
+	while(Wire.available() >0 && i < 6){
 		hmc_buffer[i] = Wire.read();  // Read one byte
+		i++;
 	}
 	Wire.read();
 	Wire.endTransmission();
 
 	// combine the raw data into full integers (HMC588L sends MSB first)
 	//           ________ MSB _______   _____ LSB ____
-	hmc_raw[0] = (hmc_buffer[0] << 8) | hmc_buffer[1]; //x
-	hmc_raw[1] = (hmc_buffer[2] << 8) | hmc_buffer[3]; //z
-	hmc_raw[2] = (hmc_buffer[4] << 8) | hmc_buffer[5]; //y
+	hmc_raw[0] = ((int)(hmc_buffer[0] << 8) | hmc_buffer[1]); //x
+	hmc_raw[1] = ((int)(hmc_buffer[2] << 8) | hmc_buffer[3]); //z
+	hmc_raw[2] = ((int)(hmc_buffer[4] << 8) | hmc_buffer[5]); //y
 
 	// put the device back into single measurement mode
 	Wire.beginTransmission(HMC_ADDRESS);
